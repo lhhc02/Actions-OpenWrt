@@ -1,0 +1,4 @@
+#!/bin/sh
+# 首次开机设置主机名
+uci set system.@system[0].hostname='SD-R3010'
+uci commit system
