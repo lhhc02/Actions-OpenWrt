@@ -59,6 +59,19 @@ jobs:
     - name: Clone source code
       run: git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
 
+    # ===== 编译缓存：首次运行慢（无缓存），第二次起提速到约 1 小时 =====
+    - name: Restore build cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          openwrt/dl
+          openwrt/staging_dir
+          openwrt/tmp
+          ~/.ccache
+        key: wr3000k-${{ env.REPO_BRANCH }}-${{ github.sha }}
+        restore-keys: |
+          wr3000k-${{ env.REPO_BRANCH }}-
+
     - name: Load custom feeds
       run: |
         [ -e files ] && mv files openwrt/files
@@ -123,9 +136,10 @@ jobs:
 
     - name: Generate release tag
       id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "$(date +"%Y.%m.%d-%H%M")-WR3000K" > release_name
+        RELEASE_NAME="$(date +"%Y.%m.%d-%H%M")-WR3000K"
+        echo "release_name=$RELEASE_NAME" >>$GITHUB_OUTPUT
         echo "status=success" >>$GITHUB_OUTPUT
 
     - name: Upload firmware to release
