@@ -1,6 +1,7 @@
 #
-# P3TERX/Actions-OpenWrt workflow — 已按 WR3000K 需求修改
-# 与原版的差异：REPO_URL/REPO_BRANCH 改为 ImmortalWrt openwrt-25.12，UPLOAD_RELEASE 打开
+# WR3000K 云编译 workflow（最终修正版）
+# 关键修复：补上了 "Update & Install feeds" 步骤（上次编译失败的根因）
+# 关键修复：删除 body_path 引用（避免 Release 警告）
 #
 
 name: Build OpenWrt
@@ -69,6 +70,12 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
 
+    - name: Update & Install feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
     - name: Run diy-part2.sh
       run: |
         chmod +x $DIY_P2_SH
@@ -129,5 +136,4 @@ jobs:
       with:
         tag_name: ${{ steps.tag.outputs.release_name || github.run_id }}
         name: ${{ steps.tag.outputs.release_name || github.run_id }}
-        body_path: release_body.txt
         files: ${{ env.FIRMWARE }}/*
