@@ -1,20 +1,16 @@
 #!/bin/bash
 #
-# https://github.com/P3TERX/Actions-OpenWrt
-# File name: diy-part2.sh
-# Description: OpenWrt DIY script part 2 (After Update feeds)
-#
-# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
+# diy-part2.sh - WR3000K 定制：型号显示名 + 编译者信息
 #
 
-# Modify default IP
-#sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate
+# 1. 修改设备型号（LuCI 状态页显示 / tmp/sysinfo/model）
+# DTS 实际路径: target/linux/mediatek/dts/mt7981b-tenbay-wr3000k.dts
+# 原始字符串: model = "Tenbay WR3000K";
+sed -i 's/"Tenbay WR3000K"/"SAIDA SD-R3010 (lhhc_02 build)"/g' \
+  target/linux/mediatek/dts/mt7981b-tenbay-wr3000k.dts
 
-# Modify default theme
-#sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci/Makefile
+# 2. 修改版本描述（/etc/openwrt_release 的 DISTRIB_DESCRIPTION）
+sed -i "s/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION='SAIDA SD-R3010 - OpenWrt by lhhc_02'/" \
+  package/base-files/files/etc/openwrt_release
 
-# Modify hostname
-#sed -i 's/OpenWrt/P3TERX-Router/g' package/base-files/files/bin/config_generate
+exit 0
