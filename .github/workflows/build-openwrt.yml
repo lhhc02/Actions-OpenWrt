@@ -7,6 +7,12 @@ on:
   schedule:
     - cron: "0 18 * * 6"
 
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-25.12
+  CONFIG_FILE: .config
+  TZ: Asia/Shanghai
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -20,13 +26,8 @@ jobs:
           sudo apt-get -y install build-essential clang flex bison g++ gawk \
             gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
             python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget
-          # 时区：runner 是容器、无 systemd/D-Bus，timedatectl 必失败，改用软链（对编译无影响）
-          sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-          # 4GB swap 兜底，防止编译 Go 程序 + 内核 BTF 时 OOM
-          sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # 时区由顶层 env TZ=Asia/Shanghai 控制，不碰 timedatectl（容器无 D-Bus 会失败）；
+          # 容器内 swapon 无 CAP_SYS_ADMIN 不可用，故不建 swap，内存靠 make -j2 控制
           free -h
 
       - name: Clone source
@@ -104,7 +105,7 @@ jobs:
       - name: Compile
         run: |
           cd openwrt
-          make -j$(nproc) V=s
+          make -j2 V=s
 
       - name: Collect artifacts
         run: |
