@@ -1,155 +1,118 @@
-#
-# WR3000K 云编译 workflow（最终修正版）
-# 关键修复：补上了 "Update & Install feeds" 步骤（上次编译失败的根因）
-# 关键修复：删除 body_path 引用（避免 Release 警告）
-#
-
-name: Build OpenWrt
+name: Build WR3000K ImmortalWrt
 
 on:
   workflow_dispatch:
-    inputs:
-      ssh:
-        description: 'SSH connection to Actions'
-        required: false
-        default: 'false'
-
-env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-25.12
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  SSH_ACTIONS: false
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_COWTRANSFER: false
-  UPLOAD_WETRANSFER: false
-  UPLOAD_RELEASE: true
-  TZ: Asia/Shanghai
+  push:
+    branches: [ main, master ]
+  schedule:
+    - cron: "0 18 * * 6"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-    - name: Check Server Performance
-      run: |
-        echo "警告：主机性能不足可能导致编译失败"
-        echo "已知大型编译会使用约 25GB 磁盘、8GB 内存"
-        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* php* dotnet* powershell openjdk* mongodb* moby || true
-        sudo -E apt-get -y autoremove --purge
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install build-essential clang flex bison g++ gawk gcc make gettext libncurses-dev libssl-dev python3 python3-pip python3-setuptools rsync swig unzip zlib1g-dev file wget
-        df -hT
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Checkout
-      uses: actions/checkout@main
+      - name: Init environment
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+            python3 python3-pip python3-setuptools rsync unzip zlib1g-dev file wget
+          sudo timedatectl set-timezone Asia/Shanghai
+          # 4GB swap 兜底，防止编译 Go 程序 + 内核 BTF 时 OOM
+          sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -y autoremove --purge
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL https://raw.githubusercontent.com/immortalwrt/immortalwrt/openwrt-25.12/include/ci-dependencies.txt || echo "build-essential clang flex bison g++ gawk gcc make gettext libncurses-dev libssl-dev python3 rsync unzip zlib1g-dev file wget")
-        sudo timedatectl set-timezone "$TZ"
+      - name: Clone source
+        run: |
+          git clone --depth 1 https://github.com/immortalwrt/immortalwrt.git -b openwrt-25.12 openwrt
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: Clone source code
-      run: git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+      - name: Load config and files
+        run: |
+          cp config openwrt/.config
+          if [ -d files ]; then
+            mkdir -p openwrt/files
+            cp -r files/. openwrt/files/
+          fi
+          echo "--- .config 种子已加载 ---"
+          cat openwrt/.config
 
-    # ===== 编译缓存：首次运行慢（无缓存），第二次起提速到约 1 小时 =====
-    - name: Restore build cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          openwrt/dl
-          openwrt/staging_dir
-          openwrt/tmp
-          ~/.ccache
-        key: wr3000k-${{ env.REPO_BRANCH }}-${{ github.sha }}
-        restore-keys: |
-          wr3000k-${{ env.REPO_BRANCH }}-
+      - name: Apply 96M partition patch
+        run: |
+          cd openwrt
+          DTS=target/linux/mediatek/dts/mt7981b-tenbay-wr3000k.dts
+          # 删除 ubi1（双系统备份分区）
+          sed -i '/partition@3580000 {/,/};/d' "$DTS"
+          # ubi 从 48M 扩到 96M
+          sed -i 's/reg = <0x580000 0x3000000>/reg = <0x580000 0x6000000>/' "$DTS"
+          echo "--- 分区修改后校验 ---"
+          grep -n -A3 'label = "ubi"' "$DTS"
+          grep -c '0x6000000' "$DTS" | xargs -I{} echo "96M 标记出现次数: {}"
 
-    - name: Load custom feeds
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+      - name: Configure packages (force add + verify)
+        run: |
+          cd openwrt
+          make defconfig
+          # 用 echo 逐行追加，避免 heredoc 缩进污染
+          echo "CONFIG_PACKAGE_luci=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+          echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
+          echo "CONFIG_PACKAGE_tailscale=y" >> .config
+          echo "CONFIG_PACKAGE_adguardhome=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-adguardhome=y" >> .config
+          echo "CONFIG_PACKAGE_openvpn-openssl=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-openvpn=y" >> .config
+          make defconfig
+          # 逐个校验，缺失即报错中断（杜绝静默丢包）
+          FAIL=0
+          for p in luci-theme-argon tailscale adguardhome luci-app-adguardhome openvpn-openssl luci-app-openvpn; do
+            if grep -q "CONFIG_PACKAGE_${p}=y" .config; then
+              echo "OK   : $p"
+            else
+              echo "ERROR: $p 未生效"
+              FAIL=1
+            fi
+          done
+          if grep -q "CONFIG_TARGET_mediatek_filogic_DEVICE_tenbay_wr3000k=y" .config; then
+            echo "OK   : target tenbay_wr3000k"
+          else
+            echo "ERROR: target 不正确"
+            FAIL=1
+          fi
+          [ "$FAIL" = "0" ] || exit 1
+          echo "=== 全部关键包与 target 已确认 ==="
 
-    - name: Run diy-part1.sh
-      run: |
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+      - name: Download packages
+        run: |
+          cd openwrt
+          make download -j8
 
-    - name: Update & Install feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+      - name: Compile
+        run: |
+          cd openwrt
+          make -j$(nproc) V=s
 
-    - name: Run diy-part2.sh
-      run: |
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+      - name: Collect artifacts
+        run: |
+          mkdir -p firmware
+          BIN=openwrt/bin/targets/mediatek/filogic
+          ls -lh "$BIN"
+          cp "$BIN"/*sysupgrade*.bin firmware/ 2>/dev/null || true
+          cp "$BIN"/*initramfs* firmware/ 2>/dev/null || true
+          echo "--- 产物清单 ---"
+          ls -lh firmware/
 
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: Compile firmware
-      id: compile
-      run: |
-        cd openwrt
-        # 创建 4GB swap 防 OOM（llvm-bpf/cmake/gmp 等大包并行编译内存峰值高）
-        sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile || echo "swap 创建失败，继续"
-        echo -e "2 thread compile (降并发防 OOM)"
-        make -j2 V=s || make -j1 V=s
-        echo "status=success" >>$GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE
-        [ -s DEVICE ] && echo "DEVICE=_$(cat DEVICE | tr -d '\n')" >> $GITHUB_ENV
-
-    - name: Check disk usage
-      if: always()
-      run: df -hT
-
-    - name: Organize files
-      id: organize
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >>$GITHUB_OUTPUT
-
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE }}
-        path: ${{ env.FIRMWARE }}
-
-    - name: Generate release tag
-      id: tag
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        RELEASE_NAME="$(date +"%Y.%m.%d-%H%M")-WR3000K"
-        echo "release_name=$RELEASE_NAME" >>$GITHUB_OUTPUT
-        echo "status=success" >>$GITHUB_OUTPUT
-
-    - name: Upload firmware to release
-      uses: softprops/action-gh-release@master
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_name || github.run_id }}
-        name: ${{ steps.tag.outputs.release_name || github.run_id }}
-        files: ${{ env.FIRMWARE }}/*
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: wr3000k-firmware
+          path: firmware/
+          retention-days: 14
