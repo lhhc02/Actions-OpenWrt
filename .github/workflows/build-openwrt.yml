@@ -37,7 +37,7 @@ jobs:
 
       - name: Load config and files
         run: |
-          cp config openwrt/.config
+          cp .config openwrt/.config
           if [ -d files ]; then
             mkdir -p openwrt/files
             cp -r files/. openwrt/files/
@@ -56,6 +56,11 @@ jobs:
           echo "--- 分区修改后校验 ---"
           grep -n -A3 'label = "ubi"' "$DTS"
           grep -c '0x6000000' "$DTS" | xargs -I{} echo "96M 标记出现次数: {}"
+          # IMAGE_SIZE 同步：48M -> 96M（filogic.mk 中全文件唯一，sed 安全）
+          sed -i 's/IMAGE_SIZE := 49152k/IMAGE_SIZE := 98304k/' target/linux/mediatek/image/filogic.mk
+          grep -q 'IMAGE_SIZE := 98304k' target/linux/mediatek/image/filogic.mk \
+            || { echo "ERROR: IMAGE_SIZE 修改失败"; exit 1; }
+          echo "OK: IMAGE_SIZE 已同步为 96M"
 
       - name: Configure packages (force add + verify)
         run: |
